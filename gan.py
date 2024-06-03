@@ -291,7 +291,7 @@ def main(args):
         os.makedirs(png_directory)
 
     # Convert .mrcs files to PNG format
-    convert_mrcs_to_png(mrcs_directory, png_directory)
+    convert_mrcs_to_png(mrcs_directory, png_directory, augment_data=args.augment_data)
 
     # Get the smallest image size in the dataset
     actual_width, actual_height = get_smallest_image_size(png_directory)
