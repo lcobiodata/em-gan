@@ -6,7 +6,7 @@ from torchvision import datasets, transforms
 from torchvision.utils import make_grid
 from torchvision.utils import save_image
 import argparse
-from gan import FCGenerator  # assuming the FCGenerator class is defined in gan.py
+from gan import FCGenerator, ConvGenerator
 
 # Define the function to rotate a 3D tensor
 def rotate_3d_tensor(tensor, angle, axis):
@@ -49,7 +49,7 @@ def rotate_3d_tensor(tensor, angle, axis):
     
     return rotated_tensor
 
-def generate_images(generator_path, dataset_path, output_dir, image_size=64):
+def generate_images(generator_path, dataset_path, output_dir, is_conv=False, image_size=64):
     # Generate a unique ID
     unique_id = uuid.uuid4()
 
@@ -84,7 +84,11 @@ def generate_images(generator_path, dataset_path, output_dir, image_size=64):
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
     # Load the generator
-    generator = FCGenerator(image_size).to(device)
+    # Identify the generator type
+    if is_conv:
+        generator = ConvGenerator(image_size).to(device)
+    else:
+        generator = FCGenerator(image_size).to(device)
     state_dict = torch.load(generator_path, map_location=device)
     generator.load_state_dict(state_dict['generator_state_dict'])
     generator.eval()
@@ -145,8 +149,9 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description='Generate images with a GAN.')
     parser.add_argument('generator_path', type=str, help='Path to the generator state.')
     parser.add_argument('dataset_path', type=str, help='Path to the dataset.')
+    parser.add_argument('--is-conv', action='store_true', help='Use ConvGenerator instead of FCGenerator.')
     parser.add_argument('--output-dir', type=str, default='.', help='Directory to save the generated images.')
     parser.add_argument('--image-size', type=int, default=64, help='The size of the images to generate.')
     args = parser.parse_args()
 
-    generate_images(args.generator_path, args.dataset_path, args.output_dir, args.image_size)
+    generate_images(args.generator_path, args.dataset_path, args.output_dir, args.is_conv, args.image_size)
