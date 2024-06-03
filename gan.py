@@ -330,7 +330,7 @@ if __name__ == "__main__":
     parser.add_argument('--augment-data', action='store_true', help='Augment data by rotating images')
     parser.add_argument('--use-conv', action='store_true', help='Use Convolutional GAN (DCGAN) instead of Fully Connected GAN (FCGAN)')
     parser.add_argument('--overkill', action='store_true', help='Boost the Convolutional GAN (DCGAN) architecture')
-    parser.add_argument('--batch-size', type=int, default=32, help='Batch size for training')
+    parser.add_argument('--batch-size', type=int, default=64, help='Batch size for training')
     parser.add_argument('--epochs', type=int, default=100, help='Number of epochs for training')
     parser.add_argument('--gan-state-path', type=str, default=None, help='Path to save and load GAN state')
 
