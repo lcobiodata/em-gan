@@ -68,12 +68,17 @@ def generate_images(generator_path, dataset_path, output_dir, image_size=64):
     png_directory = os.path.join(dataset_path, 'png')
     dataset = datasets.ImageFolder(root=png_directory, transform=transform)
 
+    # Create a DataLoader
+    dataloader = torch.utils.data.DataLoader(dataset, batch_size=images_per_axis * 3, shuffle=True)
+
+    # Get a batch of real images
+    real_images, _ = next(iter(dataloader))
+
     # Create a grid of real images
-    real_images = torch.stack([image for image, _ in [dataset[i] for i in range(images_per_axis * 3)]], dim=0)
     image_grid = make_grid(real_images, nrow=3)
 
     # Save the grid of real images
-    save_image(image_grid, os.path.join(output_dir, 'real', f'real_image_grid_{unique_id}.png'))
+    save_image(image_grid, os.path.join(output_dir, 'real', f'real_images_grid_{unique_id}.png'))
 
     # Set the device
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
@@ -134,7 +139,7 @@ def generate_images(generator_path, dataset_path, output_dir, image_size=64):
     image_grid = make_grid(images_tensor, nrow=3)  # The grid will have 3 columns (X, Y, Z)
 
     # Save the grid of images with a unique file name
-    save_image(image_grid, os.path.join(output_dir, 'fake', f'fake_image_grid_{unique_id}.png'))
+    save_image(image_grid, os.path.join(output_dir, 'fake', f'fake_images_grid_{unique_id}.png'))
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description='Generate images with a GAN.')
