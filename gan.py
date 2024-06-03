@@ -1,7 +1,5 @@
 import os
-os.environ["MKL_SERVICE_FORCE_INTEL"] = "1"
 import warnings
-warnings.filterwarnings("ignore")
 import numpy as np
 import torch
 import torch.nn as nn
@@ -15,13 +13,13 @@ import argparse
 import sys
 from tqdm import tqdm
 
-
 # Data preprocessing
-def convert_mrcs_to_png(mrcs_directory, png_directory):
+def convert_mrcs_to_png(mrcs_directory, png_directory, augment_data=False):
     """
     Convert .mrcs files to PNG format
     :param mrcs_directory: Directory containing .mrcs files
     :param png_directory: Directory to save PNG files
+    :param augment_data: Boolean flag to decide whether to augment data by rotating images
     """
     png_directory = os.path.join(png_directory, 'class1')
     os.makedirs(png_directory, exist_ok=True)
@@ -34,114 +32,111 @@ def convert_mrcs_to_png(mrcs_directory, png_directory):
                     normalized_data = ((data[i] - data[i].min()) * (255 - 0) / (data[i].max() - data[i].min())) + 0
                     img = Image.fromarray(normalized_data.astype(np.uint8)).convert('L')
                     img.save(os.path.join(png_directory, f"{filename}_{i}.png"))
+                    if augment_data:
+                        # Rotate the image by 90, 180, and 270 degrees and save
+                        for angle in [90, 180, 270]:
+                            img_rotated = img.rotate(angle)
+                            img_rotated.save(os.path.join(png_directory, f"{filename}_{i}_rot{angle}.png"))
     print(f"Converted .mrcs files from {mrcs_directory} to PNG format in {png_directory}")
 
-# Define models
-class Generator(nn.Module):
+def get_smallest_image_size(png_directory):
     """
-    Generator model
+    Get the smallest width and height of the images in the given directory
+    :param png_directory: Directory containing the images
+    :return: smallest_width, smallest_height
     """
-    def __init__(self):
-        """
-        Initialize Generator model
-        """
-        super(Generator, self).__init__()
-        self.main = nn.Sequential(
+    image_files = [f for f in os.listdir(png_directory) if f.endswith('.png')]
+
+    smallest_width = float('inf')
+    smallest_height = float('inf')
+
+    for image_file in image_files:
+        with Image.open(os.path.join(png_directory, image_file)) as img:
+            width, height = img.size
+            smallest_width = min(smallest_width, width)
+            smallest_height = min(smallest_height, height)
+
+    return smallest_width, smallest_height
+
+# Fully Connected Generator
+class FCGenerator(nn.Module):
+    def __init__(self, image_size):
+        super(FCGenerator, self).__init__()
+        self.image_size = image_size
+        self.model = nn.Sequential(
             nn.Linear(100, 256),
             nn.LeakyReLU(0.2, inplace=True),
-            nn.Dropout(0.3),  # Added dropout
+            nn.Dropout(0.3),
             nn.Linear(256, 512),
             nn.LeakyReLU(0.2, inplace=True),
-            nn.Dropout(0.3),  # Added dropout
+            nn.Dropout(0.3),
             nn.Linear(512, 1024),
             nn.LeakyReLU(0.2, inplace=True),
-            nn.Dropout(0.3),  # Added dropout
-            nn.Linear(1024, 64*64),  # Changed from 28*28 to 64*64
+            nn.Dropout(0.3),
+            nn.Linear(1024, self.image_size * self.image_size),
             nn.Tanh()
         )
 
-    def forward(self, input):
-        """
-        Forward pass of Generator model
-        :param input: Input tensor
-        :return: Output tensor
-        """
-        return self.main(input).view(-1, 1, 64, 64)  # Changed from 28 to 64
+    def forward(self, z):
+        return self.model(z).view(-1, 1, self.image_size, self.image_size)
 
+# Convolutional Generator
+class ConvGenerator(nn.Module):
+    def __init__(self, image_size, boost=False):
+        super(ConvGenerator, self).__init__()
+        self.image_size = image_size
+        self.init_size = self.image_size // 4
+        self.boost = boost
+
+        multiplier = 2 if self.boost else 1
+        channels = [128, 64]
+        if self.boost:
+            channels.insert(0, 256)
+
+        self.l1 = nn.Sequential(nn.Linear(100, (128 * multiplier) * self.init_size ** 2))
+        self.conv_blocks = self._make_layers(128 * multiplier, channels)
+
+    def _make_layers(self, input_channels, channels):
+        layers = []
+        for channel in channels:
+            layers.extend([
+                nn.BatchNorm2d(input_channels),
+                nn.Upsample(scale_factor=2),
+                nn.Conv2d(input_channels, channel, 3, stride=1, padding=1),
+                nn.BatchNorm2d(channel, 0.8),
+                nn.LeakyReLU(0.2, inplace=True),
+            ])
+            input_channels = channel
+        layers.append(nn.Conv2d(input_channels, 1, 3, stride=1, padding=1))
+        layers.append(nn.Tanh())
+        return nn.Sequential(*layers)
+
+    def forward(self, z):
+        out = self.l1(z)
+        out = out.view(out.shape[0], self.l1[0].out_features // self.init_size ** 2, self.init_size, self.init_size)
+        img = self.conv_blocks(out)
+        return img
+
+# Discriminator
 class Discriminator(nn.Module):
-    """
-    Discriminator model
-    """
-    def __init__(self):
-        """
-        Initialize Discriminator model
-        """
+    def __init__(self, image_size):
         super(Discriminator, self).__init__()
-        self.main = nn.Sequential(
-            nn.Linear(64*64, 512),  # Changed from 28*28 to 64*64
+        self.image_size = image_size
+        self.model = nn.Sequential(
+            nn.Linear(self.image_size * self.image_size, 512),
             nn.LeakyReLU(0.2, inplace=True),
-            nn.Dropout(0.3),  # Added dropout
+            nn.Dropout(0.3),
             nn.Linear(512, 256),
             nn.LeakyReLU(0.2, inplace=True),
-            nn.Dropout(0.3),  # Added dropout
+            nn.Dropout(0.3),
             nn.Linear(256, 1),
             nn.Sigmoid()
         )
 
-    def forward(self, input):
-        """
-        Forward pass of Discriminator model
-        :param input: Input tensor
-        :return: Output tensor
-        """
-        batch_size = input.size(0)
-        return self.main(input.view(batch_size, -1))
-
-
-# class Generator(nn.Module):
-#     def __init__(self):
-#         super(Generator, self).__init__()
-#         self.init_size = 64 // 4  # Initial size before upsampling
-#         self.l1 = nn.Sequential(nn.Linear(100, 128 * self.init_size ** 2))
-        
-#         self.conv_blocks = nn.Sequential(
-#             nn.BatchNorm2d(128),
-#             nn.Upsample(scale_factor=2),
-#             nn.Conv2d(128, 128, 3, stride=1, padding=1),
-#             nn.BatchNorm2d(128, 0.8),
-#             nn.LeakyReLU(0.2, inplace=True),
-#             nn.Upsample(scale_factor=2),
-#             nn.Conv2d(128, 64, 3, stride=1, padding=1),
-#             nn.BatchNorm2d(64, 0.8),
-#             nn.LeakyReLU(0.2, inplace=True),
-#             nn.Conv2d(64, 1, 3, stride=1, padding=1),
-#             nn.Tanh()
-#         )
-
-#     def forward(self, z):
-#         out = self.l1(z)
-#         out = out.view(out.shape[0], 128, self.init_size, self.init_size)
-#         img = self.conv_blocks(out)
-#         return img
-
-# class Discriminator(nn.Module):
-#     def __init__(self):
-#         super(Discriminator, self).__init__()
-#         self.model = nn.Sequential(
-#             nn.Linear(64 * 64, 512),
-#             nn.LeakyReLU(0.2, inplace=True),
-#             nn.Dropout(0.3),
-#             nn.Linear(512, 256),
-#             nn.LeakyReLU(0.2, inplace=True),
-#             nn.Dropout(0.3),
-#             nn.Linear(256, 1),
-#             nn.Sigmoid()
-#         )
-
-#     def forward(self, img):
-#         img_flat = img.view(img.size(0), -1)
-#         validity = self.model(img_flat)
-#         return validity
+    def forward(self, img):
+        img_flat = img.view(img.size(0), -1)
+        validity = self.model(img_flat)
+        return validity
 
 # Training function
 def train_gan(generator, discriminator, dataloader, epochs, device, save_path=None):
@@ -155,10 +150,12 @@ def train_gan(generator, discriminator, dataloader, epochs, device, save_path=No
     :param save_path: Path to save and load GAN state
     """
     criterion = nn.BCELoss()
-    # optimizer_g = optim.Adam(generator.parameters(), lr=0.0002, betas=(0.5, 0.999))
-    optimizer_g = optim.RMSprop(generator.parameters(), lr=0.0002)  # Changed to RMSprop
-    # optimizer_d = optim.Adam(discriminator.parameters(), lr=0.0002, betas=(0.5, 0.999))
-    optimizer_d = optim.RMSprop(discriminator.parameters(), lr=0.0002)  # Changed to RMSprop
+    optimizer_g = optim.RMSprop(generator.parameters(), lr=0.0002)
+    optimizer_d = optim.RMSprop(discriminator.parameters(), lr=0.0002)
+
+    # Define the learning rate schedulers
+    scheduler_g = torch.optim.lr_scheduler.StepLR(optimizer_g, step_size=30, gamma=0.1)
+    scheduler_d = torch.optim.lr_scheduler.StepLR(optimizer_d, step_size=30, gamma=0.1)
 
     start_epoch = 0
 
@@ -173,7 +170,7 @@ def train_gan(generator, discriminator, dataloader, epochs, device, save_path=No
 
     # tqdm progress bar for epochs
     with tqdm(total=epochs, initial=start_epoch, desc="Epochs", unit="epoch", position=1, leave=True) as pbar_epochs:
-        for epoch in range(start_epoch, epochs):  # Start from start_epoch
+        for epoch in range(start_epoch, epochs):
             for i, (real_images, _) in enumerate(dataloader):
                 real_images = real_images.to(device)
                 batch_size = real_images.size(0)
@@ -208,6 +205,10 @@ def train_gan(generator, discriminator, dataloader, epochs, device, save_path=No
 
                 # Simple progress bar for steps
                 progress_bar(i, len(dataloader), epoch, epochs, d_loss.item(), g_loss.item())
+
+            # Step the learning rate schedulers
+            scheduler_g.step()
+            scheduler_d.step()
 
             # Save model state at the end of each epoch
             torch.save({
@@ -252,12 +253,13 @@ def save_images(real_images, fake_images, epoch, batch_size):
     :param epoch: Current epoch
     :param batch_size: Batch size
     """
-    os.makedirs('./images', exist_ok=True)
+    os.makedirs('./images/real', exist_ok=True)
+    os.makedirs('./images/fake', exist_ok=True)
     nrow = int(np.floor(np.sqrt(batch_size)))  # Automatically calculate nrow
     real_images = denorm(real_images)
     fake_images = denorm(fake_images)
-    save_image(real_images, f'./images/real_images_{epoch}.png', nrow=nrow)
-    save_image(fake_images, f'./images/fake_images_{epoch}.png', nrow=nrow)
+    save_image(real_images, f'./images/real/real_images_{epoch}.png', nrow=nrow)
+    save_image(fake_images, f'./images/fake/fake_images_{epoch}.png', nrow=nrow)
 
 # Denormalize images
 def denorm(x):
@@ -288,10 +290,17 @@ def main(args):
     if not os.path.exists(png_directory):
         os.makedirs(png_directory)
 
+    # Convert .mrcs files to PNG format
     convert_mrcs_to_png(mrcs_directory, png_directory)
 
+    # Get the smallest image size in the dataset
+    actual_width, actual_height = get_smallest_image_size(png_directory)
+
+    # Use the minimum of the actual image size and the user-specified size
+    image_size = min(args.image_size, actual_width, actual_height)
+
     transform = transforms.Compose([
-        transforms.Resize((64, 64)),  # Increased image size
+        transforms.Resize((image_size, image_size)),  # Use the chosen image size
         transforms.Grayscale(),
         transforms.ToTensor(),
         transforms.Normalize((0.5,), (0.5,))
@@ -303,8 +312,13 @@ def main(args):
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     print(f"Using device: {device}")
 
-    generator = Generator().to(device)
-    discriminator = Discriminator().to(device)
+    if args.use_conv:
+        generator = ConvGenerator(args.image_size, boost=args.overkill).to(device)
+    else:
+        generator = FCGenerator(args.image_size).to(device)
+        if args.overkill:
+            print("Overkill flag is only applicable for Convolutional GAN (DCGAN). Ignoring the flag.")
+    discriminator = Discriminator(args.image_size).to(device)
 
     epochs = args.epochs
     train_gan(generator, discriminator, dataloader, args.epochs, device, args.gan_state_path)
@@ -312,6 +326,10 @@ def main(args):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description='Train a GAN on mrcs images converted to PNG.')
     parser.add_argument('--input-data-dir', type=str, required=True, help='Directory of the input data')
+    parser.add_argument('--image-size', type=int, default=64, help='The size of the images to generate')
+    parser.add_argument('--augment-data', action='store_true', help='Augment data by rotating images')
+    parser.add_argument('--use-conv', action='store_true', help='Use Convolutional GAN (DCGAN) instead of Fully Connected GAN (FCGAN)')
+    parser.add_argument('--overkill', action='store_true', help='Boost the Convolutional GAN (DCGAN) architecture')
     parser.add_argument('--batch-size', type=int, default=32, help='Batch size for training')
     parser.add_argument('--epochs', type=int, default=100, help='Number of epochs for training')
     parser.add_argument('--gan-state-path', type=str, default=None, help='Path to save and load GAN state')
