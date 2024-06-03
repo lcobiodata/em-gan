@@ -80,40 +80,31 @@ class FCGenerator(nn.Module):
     def forward(self, z):
         return self.model(z).view(-1, 1, self.image_size, self.image_size)
 
-# Convolutional Generator
 class ConvGenerator(nn.Module):
-    def __init__(self, image_size, boost=False):
+    def __init__(self, image_size):
         super(ConvGenerator, self).__init__()
-        self.image_size = image_size
-        self.init_size = self.image_size // 4
-        self.boost = boost
+        self.init_size = image_size // 4
 
-        multiplier = 2 if self.boost else 1
-        channels = [128, 64]
-        if self.boost:
-            channels.insert(0, 256)
+        self.l1 = nn.Sequential(nn.Linear(100, 128 * self.init_size ** 2))
 
-        self.l1 = nn.Sequential(nn.Linear(100, (128 * multiplier) * self.init_size ** 2))
-        self.conv_blocks = self._make_layers(128 * multiplier, channels)
-
-    def _make_layers(self, input_channels, channels):
-        layers = []
-        for channel in channels:
-            layers.extend([
-                nn.BatchNorm2d(input_channels),
-                nn.Upsample(scale_factor=2),
-                nn.Conv2d(input_channels, channel, 3, stride=1, padding=1),
-                nn.BatchNorm2d(channel, 0.8),
-                nn.LeakyReLU(0.2, inplace=True),
-            ])
-            input_channels = channel
-        layers.append(nn.Conv2d(input_channels, 1, 3, stride=1, padding=1))
-        layers.append(nn.Tanh())
-        return nn.Sequential(*layers)
+        self.conv_blocks = nn.Sequential(
+            nn.BatchNorm2d(128),
+            nn.Upsample(scale_factor=2),
+            nn.Conv2d(128, 128, 3, stride=1, padding=1),
+            nn.BatchNorm2d(128, 0.8),
+            nn.LeakyReLU(0.2, inplace=True),
+            nn.BatchNorm2d(128),
+            nn.Upsample(scale_factor=2),
+            nn.Conv2d(128, 64, 3, stride=1, padding=1),
+            nn.BatchNorm2d(64, 0.8),
+            nn.LeakyReLU(0.2, inplace=True),
+            nn.Conv2d(64, 1, 3, stride=1, padding=1),
+            nn.Tanh(),
+        )
 
     def forward(self, z):
         out = self.l1(z)
-        out = out.view(out.shape[0], self.l1[0].out_features // self.init_size ** 2, self.init_size, self.init_size)
+        out = out.view(out.shape[0], 128, self.init_size, self.init_size)
         img = self.conv_blocks(out)
         return img
 
@@ -123,13 +114,19 @@ class Discriminator(nn.Module):
         super(Discriminator, self).__init__()
         self.image_size = image_size
         self.model = nn.Sequential(
-            nn.Linear(self.image_size * self.image_size, 512),
+            nn.Linear(self.image_size * self.image_size, 1024),
+            nn.LeakyReLU(0.2, inplace=True),
+            nn.Dropout(0.3),
+            nn.Linear(1024, 512),
             nn.LeakyReLU(0.2, inplace=True),
             nn.Dropout(0.3),
             nn.Linear(512, 256),
             nn.LeakyReLU(0.2, inplace=True),
             nn.Dropout(0.3),
-            nn.Linear(256, 1),
+            nn.Linear(256, 128),
+            nn.LeakyReLU(0.2, inplace=True),
+            nn.Dropout(0.3),
+            nn.Linear(128, 1),
             nn.Sigmoid()
         )
 
@@ -313,11 +310,9 @@ def main(args):
     print(f"Using device: {device}")
 
     if args.use_conv:
-        generator = ConvGenerator(args.image_size, boost=args.overkill).to(device)
+        generator = ConvGenerator(args.image_size).to(device)
     else:
         generator = FCGenerator(args.image_size).to(device)
-        if args.overkill:
-            print("Overkill flag is only applicable for Convolutional GAN (DCGAN). Ignoring the flag.")
     discriminator = Discriminator(args.image_size).to(device)
 
     epochs = args.epochs
@@ -329,7 +324,6 @@ if __name__ == "__main__":
     parser.add_argument('--image-size', type=int, default=64, help='The size of the images to generate')
     parser.add_argument('--augment-data', action='store_true', help='Augment data by rotating images')
     parser.add_argument('--use-conv', action='store_true', help='Use Convolutional GAN (DCGAN) instead of Fully Connected GAN (FCGAN)')
-    parser.add_argument('--overkill', action='store_true', help='Boost the Convolutional GAN (DCGAN) architecture')
     parser.add_argument('--batch-size', type=int, default=64, help='Batch size for training')
     parser.add_argument('--epochs', type=int, default=100, help='Number of epochs for training')
     parser.add_argument('--gan-state-path', type=str, default=None, help='Path to save and load GAN state')
